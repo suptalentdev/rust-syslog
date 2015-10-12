@@ -18,7 +18,7 @@
 //!   match syslog::unix(Facility::LOG_USER) {
 //!     Err(e)         => println!("impossible to connect to syslog: {:?}", e),
 //!     Ok(mut writer) => {
-//!       let r = writer.send(Severity::LOG_ALERT, "hello world");
+//!       let r = writer.send(Severity::LOG_ALERT, String::from("hello world"));
 //!       if r.is_err() {
 //!         println!("error sending the log {}", r.err().expect("got error"));
 //!       }
@@ -103,22 +103,26 @@ pub struct Logger {
   s:        LoggerBackend
 }
 
-/// Returns a Logger using unix socket to target local syslog ( using /dev/log or /var/run/syslog)
-pub fn unix(facility: Facility) -> Result<Box<Logger>, io::Error> {
+fn detect_unix_socket() -> Result<UnixDatagram, io::Error> {
   let sock = try!(UnixDatagram::unbound());
   try!(sock.connect("/dev/log")
     .or_else(|e| if e.kind() == io::ErrorKind::NotFound {
-        sock.connect("/var/run/syslog")
+      sock.connect("/var/run/syslog")
     } else {
-        Err(e)
+      Err(e)
     }));
+  Ok(sock)
+}
+
+/// Returns a Logger using unix socket to target local syslog ( using /dev/log or /var/run/syslog)
+pub fn unix(facility: Facility) -> Result<Box<Logger>, io::Error> {
   let (process_name, pid) = get_process_info().unwrap();
   Ok(Box::new(Logger {
     facility: facility.clone(),
     hostname: "localhost".to_string(),
     process:  process_name,
     pid:      pid,
-    s:        LoggerBackend::Unix(sock),
+    s:        LoggerBackend::Unix(try!(detect_unix_socket())),
   }))
 }
 
@@ -183,9 +187,50 @@ pub fn init_tcp<T: ToSocketAddrs>(server: T, hostname: String, facility: Facilit
   })
 }
 
+/// Initializes logging subsystem for log crate
+///
+/// This tries to connect to syslog by following ways:
+///
+/// 1. Unix sockets /dev/log and /var/run/syslog (in this order)
+/// 2. Tcp connection to 127.0.0.1:601
+/// 3. Udp connection to 127.0.0.1:514
+///
+/// Note the last option usually (almost) never fails in this method. So
+/// this method doesn't return error even if there is no syslog.
+///
+/// If `application_name` is `None` name is derived from executable name
+pub fn init(facility: Facility, log_level: log::LogLevelFilter,
+    application_name: Option<&str>)
+    -> Result<(), SetLoggerError>
+{
+  let backend = detect_unix_socket().map(LoggerBackend::Unix)
+    .or_else(|_| {
+        TcpStream::connect(("127.0.0.1", 601))
+        .map(|s| LoggerBackend::Tcp(Arc::new(Mutex::new(s))))
+    })
+    .or_else(|_| {
+        let udp_addr = "127.0.0.1:514".parse().unwrap();
+        UdpSocket::bind(("127.0.0.1", 0))
+        .map(|s| LoggerBackend::Udp(Box::new(s), udp_addr))
+    }).unwrap_or_else(|e| panic!("Syslog UDP socket creating failed: {}", e));
+  let (process_name, pid) = get_process_info().unwrap();
+  log::set_logger(|max_level| {
+    max_level.set(log_level);
+    Box::new(Logger {
+        facility: facility.clone(),
+        hostname: "localhost".to_string(),
+        process:  application_name
+            .map(|v| v.to_string())
+            .unwrap_or(process_name),
+        pid:      pid,
+        s:        backend,
+    })
+  })
+}
+
 impl Logger {
   /// format a message as a RFC 3164 log message
-  pub fn format_3164(&self, severity:Severity, message: &str) -> String {
+  pub fn format_3164(&self, severity:Severity, message: String) -> String {
     let f =  format!("<{}>{} {} {}[{}]: {}",
       self.encode_priority(severity, self.facility),
       time::now().strftime("%b %d %T").unwrap(),
@@ -212,7 +257,7 @@ impl Logger {
   }
 
   /// format a message as a RFC 5424 log message
-  pub fn format_5424(&self, severity:Severity, message_id: i32, data: StructuredData, message: &str) -> String {
+  pub fn format_5424(&self, severity:Severity, message_id: i32, data: StructuredData, message: String) -> String {
     let f =  format!("<{}> {} {} {} {} {} {} {} {}",
       self.encode_priority(severity, self.facility),
       1, // version
@@ -227,7 +272,7 @@ impl Logger {
   }
 
   /// Sends a basic log message of the format `<priority> message`
-  pub fn send(&self, severity: Severity, message: &str) -> Result<usize, io::Error> {
+  pub fn send(&self, severity: Severity, message: String) -> Result<usize, io::Error> {
     let formatted =  format!("<{}> {}",
       self.encode_priority(severity, self.facility.clone()),
       message).into_bytes();
@@ -235,13 +280,13 @@ impl Logger {
   }
 
   /// Sends a RFC 3164 log message
-  pub fn send_3164(&self, severity: Severity, message: &str) -> Result<usize, io::Error> {
+  pub fn send_3164(&self, severity: Severity, message: String) -> Result<usize, io::Error> {
     let formatted = self.format_3164(severity, message).into_bytes();
     self.send_raw(&formatted[..])
   }
 
   /// Sends a RFC 5424 log message
-  pub fn send_5424(&self, severity: Severity, message_id: i32, data: StructuredData, message: &str) -> Result<usize, io::Error> {
+  pub fn send_5424(&self, severity: Severity, message_id: i32, data: StructuredData, message: String) -> Result<usize, io::Error> {
     let formatted = self.format_5424(severity, message_id, data, message).into_bytes();
     self.send_raw(&formatted[..])
   }
@@ -258,35 +303,35 @@ impl Logger {
     }
   }
 
-  pub fn emerg(&self, message: &str) -> Result<usize, io::Error> {
+  pub fn emerg(&self, message: String) -> Result<usize, io::Error> {
     self.send_3164(Severity::LOG_EMERG, message)
   }
 
-  pub fn alert(&self, message: &str) -> Result<usize, io::Error> {
+  pub fn alert(&self, message: String) -> Result<usize, io::Error> {
     self.send_3164(Severity::LOG_ALERT, message)
   }
 
-  pub fn crit(&self, message: &str) -> Result<usize, io::Error> {
+  pub fn crit(&self, message: String) -> Result<usize, io::Error> {
     self.send_3164(Severity::LOG_CRIT, message)
   }
 
-  pub fn err(&self, message: &str) -> Result<usize, io::Error> {
+  pub fn err(&self, message: String) -> Result<usize, io::Error> {
     self.send_3164(Severity::LOG_ERR, message)
   }
 
-  pub fn warning(&self, message: &str) -> Result<usize, io::Error> {
+  pub fn warning(&self, message: String) -> Result<usize, io::Error> {
     self.send_3164(Severity::LOG_WARNING, message)
   }
 
-  pub fn notice(&self, message: &str) -> Result<usize, io::Error> {
+  pub fn notice(&self, message: String) -> Result<usize, io::Error> {
     self.send_3164(Severity::LOG_NOTICE, message)
   }
 
-  pub fn info(&self, message: &str) -> Result<usize, io::Error> {
+  pub fn info(&self, message: String) -> Result<usize, io::Error> {
     self.send_3164(Severity::LOG_INFO, message)
   }
 
-  pub fn debug(&self, message: &str) -> Result<usize, io::Error> {
+  pub fn debug(&self, message: String) -> Result<usize, io::Error> {
     self.send_3164(Severity::LOG_DEBUG, message)
   }
 
@@ -314,7 +359,7 @@ impl Log for Logger {
   }
 
   fn log(&self, record: &LogRecord) {
-    let message = &(format!("{}", record.args()));
+    let message = (format!("{}", record.args())).to_string();
     match record.level() {
       LogLevel::Error => self.err(message),
       LogLevel::Warn  => self.warning(message),
@@ -344,9 +389,9 @@ fn message() {
   //let r = tcp("127.0.0.1:4242", "localhost".to_string(), Facility::LOG_USER);
   if r.is_ok() {
     let w = r.unwrap();
-    let m:String = w.format_3164(Severity::LOG_ALERT, "hello");
+    let m:String = w.format_3164(Severity::LOG_ALERT, "hello".to_string());
     println!("test: {}", m);
-    let r = w.send_3164(Severity::LOG_ALERT, "pouet");
+    let r = w.send_3164(Severity::LOG_ALERT, "pouet".to_string());
     if r.is_err() {
       println!("error sending: {}", r.unwrap_err());
     }
@@ -359,8 +404,8 @@ fn message() {
       let tx = tx.clone();
       thread::spawn(move || {
         //let mut logger = *shared;
-        let message = &format!("sent from {}", i);
-        shared.send_3164(Severity::LOG_DEBUG, message);
+        let message = format!("sent from {}", i);
+        shared.send_3164(Severity::LOG_DEBUG, message.to_string());
         tx.send(());
       });
     }
