@@ -40,7 +40,7 @@ use std::collections::HashMap;
 use std::net::{SocketAddr,ToSocketAddrs,UdpSocket,TcpStream};
 use std::sync::{Arc, Mutex};
 
-use libc::funcs::posix88::unistd::getpid;
+use libc::getpid;
 use unix_socket::UnixDatagram;
 use log::{Log,LogRecord,LogMetadata,LogLevel,SetLoggerError};
 
@@ -143,25 +143,25 @@ pub fn tcp<T: ToSocketAddrs>(server: T, hostname: String, facility: Facility) ->
 }
 
 /// Unix socket Logger init function compatible with log crate
-pub fn init_unix(facility: Facility, log_level: log::LogLevelFilter) -> Result<(), SetLoggerError> {
+#[allow(unused_variables)]
+pub fn init_unix(facility: Facility) -> Result<(), SetLoggerError> {
   log::set_logger(|max_level| {
-    max_level.set(log_level);
     unix(facility).unwrap()
   })
 }
 
 /// UDP Logger init function compatible with log crate
-pub fn init_udp<T: ToSocketAddrs>(local: T, server: T, hostname:String, facility: Facility, log_level: log::LogLevelFilter) -> Result<(), SetLoggerError> {
+#[allow(unused_variables)]
+pub fn init_udp<T: ToSocketAddrs>(local: T, server: T, hostname:String, facility: Facility) -> Result<(), SetLoggerError> {
   log::set_logger(|max_level| {
-    max_level.set(log_level);
     udp(local, server, hostname, facility).unwrap()
   })
 }
 
 /// TCP Logger init function compatible with log crate
-pub fn init_tcp<T: ToSocketAddrs>(server: T, hostname: String, facility: Facility, log_level: log::LogLevelFilter) -> Result<(), SetLoggerError> {
+#[allow(unused_variables)]
+pub fn init_tcp<T: ToSocketAddrs>(server: T, hostname: String, facility: Facility) -> Result<(), SetLoggerError> {
   log::set_logger(|max_level| {
-    max_level.set(log_level);
     tcp(server, hostname, facility).unwrap()
   })
 }
