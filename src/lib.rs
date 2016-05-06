@@ -17,7 +17,7 @@
 //! fn main() {
 //!   match syslog::unix(Facility::LOG_USER) {
 //!     Err(e)         => println!("impossible to connect to syslog: {:?}", e),
-//!     Ok(mut writer) => {
+//!     Ok(writer) => {
 //!       let r = writer.send(Severity::LOG_ALERT, "hello world");
 //!       if r.is_err() {
 //!         println!("error sending the log {}", r.err().expect("got error"));
@@ -39,7 +39,6 @@ use std::env;
 use std::collections::HashMap;
 use std::net::{SocketAddr,ToSocketAddrs,UdpSocket,TcpStream};
 use std::sync::{Arc, Mutex};
-use std::path::Path;
 
 use libc::funcs::posix88::unistd::getpid;
 use unix_socket::UnixDatagram;
@@ -83,27 +82,27 @@ pub struct Logger {
   s:        LoggerBackend
 }
 
-/// Returns a Logger using unix socket to target local syslog ( using /dev/log or /var/run/syslog)
-pub fn unix(facility: Facility) -> Result<Box<Logger>, io::Error> {
-    unix_custom(facility, "/dev/log").or_else(|e| if e.kind() == io::ErrorKind::NotFound {
-        unix_custom(facility, "/var/run/syslog")
+fn detect_unix_socket() -> Result<UnixDatagram, io::Error> {
+  let sock = try!(UnixDatagram::unbound());
+  try!(sock.connect("/dev/log")
+    .or_else(|e| if e.kind() == io::ErrorKind::NotFound {
+      sock.connect("/var/run/syslog")
     } else {
-        Err(e)
-    })
+      Err(e)
+    }));
+  Ok(sock)
 }
 
-/// Returns a Logger using unix socket to target local syslog at user provided path
-pub fn unix_custom<P: AsRef<Path>>(facility: Facility, path: P) -> Result<Box<Logger>, io::Error> {
-    let (process_name, pid) = get_process_info().unwrap();
-    let sock = try!(UnixDatagram::unbound());
-    try!(sock.connect(path));
-    Ok(Box::new(Logger {
-        facility: facility.clone(),
-        hostname: None,
-        process:  process_name,
-        pid:      pid,
-        s:        LoggerBackend::Unix(sock),
-    }))
+/// Returns a Logger using unix socket to target local syslog ( using /dev/log or /var/run/syslog)
+pub fn unix(facility: Facility) -> Result<Box<Logger>, io::Error> {
+  let (process_name, pid) = get_process_info().unwrap();
+  Ok(Box::new(Logger {
+    facility: facility.clone(),
+    hostname: None,
+    process:  process_name,
+    pid:      pid,
+    s:        LoggerBackend::Unix(try!(detect_unix_socket())),
+  }))
 }
 
 /// returns a UDP logger connecting `local` and `server`
@@ -151,13 +150,6 @@ pub fn init_unix(facility: Facility) -> Result<(), SetLoggerError> {
   })
 }
 
-/// Unix socket Logger init function compatible with log crate and user provided socket path
-pub fn init_unix_custom<P: AsRef<Path>>(facility: Facility, path: P) -> Result<(), SetLoggerError> {
-    log::set_logger(|_| {
-        unix_custom(facility, path).unwrap()
-    })
-}
-
 /// UDP Logger init function compatible with log crate
 #[allow(unused_variables)]
 pub fn init_udp<T: ToSocketAddrs>(local: T, server: T, hostname:String, facility: Facility) -> Result<(), SetLoggerError> {
@@ -190,7 +182,7 @@ pub fn init(facility: Facility, log_level: log::LogLevelFilter,
     application_name: Option<&str>)
     -> Result<(), SetLoggerError>
 {
-  let backend = unix(facility).map(|logger| logger.s)
+  let backend = detect_unix_socket().map(LoggerBackend::Unix)
     .or_else(|_| {
         TcpStream::connect(("127.0.0.1", 601))
         .map(|s| LoggerBackend::Tcp(Arc::new(Mutex::new(s))))
