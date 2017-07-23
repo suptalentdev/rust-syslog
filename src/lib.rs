@@ -41,10 +41,9 @@ use std::net::{SocketAddr,ToSocketAddrs,UdpSocket,TcpStream};
 use std::sync::{Arc, Mutex};
 use std::path::Path;
 use std::fmt;
-use std::error::Error;
 
 use libc::getpid;
-use unix_socket::UnixDatagram;
+use unix_socket::{UnixDatagram, UnixStream};
 use log::{Log,LogRecord,LogMetadata,LogLevel,SetLoggerError};
 
 mod facility;
@@ -72,27 +71,9 @@ pub enum Severity {
 enum LoggerBackend {
   /// Unix socket, temp file path, log file path
   Unix(UnixDatagram),
+  UnixStream(Arc<Mutex<UnixStream>>),
   Udp(Box<UdpSocket>, SocketAddr),
   Tcp(Arc<Mutex<TcpStream>>)
-}
-
-#[derive(Debug)]
-pub struct SyslogError {
-    description: String,
-}
-
-impl Error for SyslogError {
-    fn description(&self) -> &str {
-        &self.description
-    }
-
-    fn cause(&self) -> Option<&Error> { None }
-}
-
-impl fmt::Display for SyslogError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.description)
-    }
 }
 
 /// Main logging structure
@@ -117,14 +98,28 @@ pub fn unix(facility: Facility) -> Result<Box<Logger>, io::Error> {
 pub fn unix_custom<P: AsRef<Path>>(facility: Facility, path: P) -> Result<Box<Logger>, io::Error> {
     let (process_name, pid) = get_process_info().unwrap();
     let sock = try!(UnixDatagram::unbound());
-    try!(sock.connect(path));
-    Ok(Box::new(Logger {
-        facility: facility.clone(),
-        hostname: None,
-        process:  process_name,
-        pid:      pid,
-        s:        LoggerBackend::Unix(sock),
-    }))
+    match sock.connect(&path) {
+        Ok(()) => {
+            Ok(Box::new(Logger {
+                facility: facility.clone(),
+                hostname: None,
+                process:  process_name,
+                pid:      pid,
+                s:        LoggerBackend::Unix(sock),
+            }))
+        },
+        Err(ref e) if e.raw_os_error() == Some(libc::EPROTOTYPE) => {
+            let sock = try!(UnixStream::connect(path));
+            Ok(Box::new(Logger {
+                facility: facility.clone(),
+                hostname: None,
+                process:  process_name,
+                pid:      pid,
+                s:        LoggerBackend::UnixStream(Arc::new(Mutex::new(sock))),
+            }))
+        },
+        Err(e) => Err(e),
+    }
 }
 
 /// returns a UDP logger connecting `local` and `server`
@@ -210,7 +205,7 @@ pub fn init_tcp<T: ToSocketAddrs>(server: T, hostname: String, facility: Facilit
 /// If `application_name` is `None` name is derived from executable name
 pub fn init(facility: Facility, log_level: log::LogLevelFilter,
     application_name: Option<&str>)
-    -> Result<(), SyslogError>
+    -> Result<(), SetLoggerError>
 {
   let backend = unix(facility).map(|logger| logger.s)
     .or_else(|_| {
@@ -221,7 +216,7 @@ pub fn init(facility: Facility, log_level: log::LogLevelFilter,
         let udp_addr = "127.0.0.1:514".parse().unwrap();
         UdpSocket::bind(("127.0.0.1", 0))
         .map(|s| LoggerBackend::Udp(Box::new(s), udp_addr))
-    }).map_err(|e| SyslogError{ description: e.description().to_owned() })?;
+    }).unwrap_or_else(|e| panic!("Syslog UDP socket creating failed: {}", e));
   let (process_name, pid) = get_process_info().unwrap();
   log::set_logger(|max_level| {
     max_level.set(log_level);
@@ -234,7 +229,7 @@ pub fn init(facility: Facility, log_level: log::LogLevelFilter,
         pid:      pid,
         s:        backend,
     })
-  }).map_err(|e| SyslogError{ description: e.description().to_owned() })
+  })
 }
 
 impl Logger {
@@ -311,6 +306,10 @@ impl Logger {
   pub fn send_raw(&self, message: &[u8]) -> Result<usize, io::Error> {
     match self.s {
       LoggerBackend::Unix(ref dgram) => dgram.send(&message[..]),
+      LoggerBackend::UnixStream(ref socket_wrap) => {
+        let mut socket = socket_wrap.lock().unwrap();
+        socket.write(&message[..])
+      },
       LoggerBackend::Udp(ref socket, ref addr)    => socket.send_to(&message[..], addr),
       LoggerBackend::Tcp(ref socket_wrap)         => {
         let mut socket = socket_wrap.lock().unwrap();
@@ -365,6 +364,11 @@ impl Logger {
 
   pub fn set_process_id(&mut self, id: i32) {
     self.pid = id
+  }
+  
+  /// Changes facility
+  pub fn set_facility(&mut self, facility: Facility) {
+    self.facility = facility;
   }
 }
 
