@@ -41,6 +41,7 @@ use std::net::{SocketAddr,ToSocketAddrs,UdpSocket,TcpStream};
 use std::sync::{Arc, Mutex};
 use std::path::Path;
 use std::fmt;
+use std::error::Error;
 
 use libc::getpid;
 use unix_socket::{UnixDatagram, UnixStream};
@@ -74,6 +75,25 @@ enum LoggerBackend {
   UnixStream(Arc<Mutex<UnixStream>>),
   Udp(Box<UdpSocket>, SocketAddr),
   Tcp(Arc<Mutex<TcpStream>>)
+}
+
+#[derive(Debug)]
+pub struct SyslogError {
+    description: String,
+}
+
+impl Error for SyslogError {
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn cause(&self) -> Option<&Error> { None }
+}
+
+impl fmt::Display for SyslogError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.description)
+    }
 }
 
 /// Main logging structure
@@ -205,7 +225,7 @@ pub fn init_tcp<T: ToSocketAddrs>(server: T, hostname: String, facility: Facilit
 /// If `application_name` is `None` name is derived from executable name
 pub fn init(facility: Facility, log_level: log::LogLevelFilter,
     application_name: Option<&str>)
-    -> Result<(), SetLoggerError>
+    -> Result<(), SyslogError>
 {
   let backend = unix(facility).map(|logger| logger.s)
     .or_else(|_| {
@@ -216,7 +236,7 @@ pub fn init(facility: Facility, log_level: log::LogLevelFilter,
         let udp_addr = "127.0.0.1:514".parse().unwrap();
         UdpSocket::bind(("127.0.0.1", 0))
         .map(|s| LoggerBackend::Udp(Box::new(s), udp_addr))
-    }).unwrap_or_else(|e| panic!("Syslog UDP socket creating failed: {}", e));
+    }).map_err(|e| SyslogError{ description: e.description().to_owned() })?;
   let (process_name, pid) = get_process_info().unwrap();
   log::set_logger(|max_level| {
     max_level.set(log_level);
@@ -229,7 +249,7 @@ pub fn init(facility: Facility, log_level: log::LogLevelFilter,
         pid:      pid,
         s:        backend,
     })
-  })
+  }).map_err(|e| SyslogError{ description: e.description().to_owned() })
 }
 
 impl Logger {
@@ -308,7 +328,8 @@ impl Logger {
       LoggerBackend::Unix(ref dgram) => dgram.send(&message[..]),
       LoggerBackend::UnixStream(ref socket_wrap) => {
         let mut socket = socket_wrap.lock().unwrap();
-        socket.write(&message[..])
+        let null = [0 ; 1];
+        socket.write(&message[..]).and_then(|_| socket.write(&null))
       },
       LoggerBackend::Udp(ref socket, ref addr)    => socket.send_to(&message[..], addr),
       LoggerBackend::Tcp(ref socket_wrap)         => {
