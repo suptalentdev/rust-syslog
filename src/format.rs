@@ -97,12 +97,12 @@ impl Formatter5424 {
       "-".to_string()
     } else {
       let mut res = String::new();
-      for (id, params) in &data {
+      for (id, params) in data.iter() {
         res = res + "["+id;
-        for (name,value) in params {
+        for (name,value) in params.iter() {
           res = res + " " + name + "=\"" + value + "\"";
         }
-        res += "]";
+        res = res + "]";
       }
 
       res
@@ -125,5 +125,5 @@ impl<T: Display> LogFormat<(i32, StructuredData, T)> for Formatter5424 {
 }
 
 fn encode_priority(severity: Severity, facility: Facility) -> Priority {
-  facility as u8 | severity as u8
+  return facility as u8 | severity as u8
 }
