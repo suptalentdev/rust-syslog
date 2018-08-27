@@ -1,7 +1,7 @@
 [package]
 
 name = "syslog"
-version = "4.0.0"
+version = "4.0.1"
 authors = [ "contact@geoffroycouprie.com" ]
 description = "Send log messages to syslog"
 license = "MIT"
@@ -10,7 +10,6 @@ documentation = "https://docs.rs/syslog"
 keywords = ["syslog", "logs", "logging"]
 
 [dependencies]
-unix_socket = "^0.5"
 libc        = "^0.2"
 time        = "^0.1"
 log         = { version =  "^0.4.1", features = [ "std" ] }
