@@ -3,8 +3,8 @@ extern crate syslog;
 #[macro_use]
 extern crate log;
 
-use log::LevelFilter;
-use syslog::{BasicLogger, Facility, Formatter3164};
+use syslog::{Facility, Formatter3164, BasicLogger};
+use log:: LevelFilter;
 
 fn main() {
     let formatter = Formatter3164 {
@@ -16,8 +16,7 @@ fn main() {
 
     let logger = syslog::unix(formatter).expect("could not connect to syslog");
     log::set_boxed_logger(Box::new(BasicLogger::new(logger)))
-        .map(|()| log::set_max_level(LevelFilter::Info))
-        .expect("could not register logger");
+            .map(|()| log::set_max_level(LevelFilter::Info)).expect("could not register logger");
 
     info!("hello world");
 }
