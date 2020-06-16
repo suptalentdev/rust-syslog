@@ -88,8 +88,8 @@ pub type Priority = u8;
 
 /// Main logging structure
 pub struct Logger<Backend: Write, Formatter> {
-  formatter: Formatter,
-  backend:   Backend,
+  pub formatter: Formatter,
+  pub backend:   Backend,
 }
 
 impl<W:Write, F> Logger<W, F> {
@@ -434,7 +434,7 @@ pub fn init(facility: Facility, log_level: log::LevelFilter,
   let process = application_name.map(From::from).unwrap_or(process_name);
   let formatter = Formatter3164 {
     facility,
-    hostname: get_hostname().ok(),
+    hostname: None,
     process,
     pid,
   };
@@ -469,6 +469,3 @@ fn get_process_info() -> Result<(String,i32)> {
   })
 }
 
-fn get_hostname() -> Result<String> {
-  Ok(hostname::get()?.to_string_lossy().to_string())
-}
