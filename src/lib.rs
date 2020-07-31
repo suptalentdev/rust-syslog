@@ -88,8 +88,8 @@ pub type Priority = u8;
 
 /// Main logging structure
 pub struct Logger<Backend: Write, Formatter> {
-  pub formatter: Formatter,
-  pub backend:   Backend,
+  formatter: Formatter,
+  backend:   Backend,
 }
 
 impl<W:Write, F> Logger<W, F> {
@@ -310,7 +310,7 @@ impl BasicLogger {
 #[allow(unused_variables,unused_must_use)]
 impl Log for BasicLogger {
   fn enabled(&self, metadata: &Metadata) -> bool {
-    true
+    metadata.level() <= log::max_level() && metadata.level() <= log::STATIC_MAX_LEVEL
   }
 
   fn log(&self, record: &Record) {
