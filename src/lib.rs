@@ -49,7 +49,11 @@
 //!         pid: 0,
 //!     };
 //!
-//!     let logger = syslog::unix(formatter).expect("could not connect to syslog");
+//!     let logger = match syslog::unix(formatter) {
+//!         Err(e) => { println!("impossible to connect to syslog: {:?}", e); return; },
+//!         Ok(logger) => logger,
+//!     };
+//!
 //!     log::set_boxed_logger(Box::new(BasicLogger::new(logger)))
 //!             .map(|()| log::set_max_level(LevelFilter::Info));
 //!
@@ -310,7 +314,7 @@ impl BasicLogger {
 #[allow(unused_variables,unused_must_use)]
 impl Log for BasicLogger {
   fn enabled(&self, metadata: &Metadata) -> bool {
-    metadata.level() <= log::max_level() && metadata.level() <= log::STATIC_MAX_LEVEL
+    true
   }
 
   fn log(&self, record: &Record) {
